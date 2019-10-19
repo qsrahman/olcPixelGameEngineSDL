@@ -502,6 +502,8 @@ namespace olc
         void DrawString(int32_t x, int32_t y, std::string sText, Pixel col = olc::WHITE, uint32_t scale = 1);
         // Clears entire draw target to Pixel
         void Clear(Pixel p);
+        // Resize the primary screen sprite
+        void SetScreenSize(int w, int h);
 
     public: // Branding
         std::string sAppName;
@@ -513,12 +515,13 @@ namespace olc
     	SDL_Window* window = NULL;
     	SDL_Surface* screenSurface = NULL;
     	SDL_Renderer* renderer = NULL;
+	SDL_Texture* texture = NULL;
     	SDL_GameController* controller = NULL;
         int nWindowX = SDL_WINDOWPOS_UNDEFINED;
         int nWindowY = SDL_WINDOWPOS_UNDEFINED;
         Uint32 initFlags = SDL_INIT_VIDEO;
         Uint32 windowFlags = SDL_WINDOW_SHOWN;
-        Uint32 rendererFlags = SDL_RENDERER_ACCELERATED;
+        Uint32 rendererFlags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC;
         bool controllerSupport = false;
 
         static std::map<uint16_t, ControllerButton> mapControllerButtons;
@@ -1097,14 +1100,45 @@ namespace olc
         return olc::OK;
     }
 
+    void PixelGameEngine::SetScreenSize(int w, int h) 
+    {
+        delete pDefaultDrawTarget;
+
+        nScreenWidth = w;
+        nScreenHeight = h;
+        pDefaultDrawTarget = new Sprite(nScreenWidth, nScreenHeight);
+        SetDrawTarget(nullptr);
+
+        SDL_DestroyTexture(texture);
+
+        texture = SDL_CreateTexture(
+            renderer, 
+            SDL_PIXELFORMAT_ARGB8888, 
+            SDL_TEXTUREACCESS_STREAMING, 
+            nScreenWidth, 
+            nScreenHeight
+        );
+
+        SDL_RenderClear(renderer);
+        SDL_RenderPresent(renderer);
+        SDL_RenderClear(renderer);
+
+        olc_UpdateViewport();
+    }
+
     olc::rcode PixelGameEngine::Start()
     {
+        if (!olc_WindowCreate())
+            return olc::FAIL;
+
         // Start the thread
         bAtomActive = true;
-        std::thread t{ &PixelGameEngine::EngineThread, this };
-
+        // std::thread t{ &PixelGameEngine::EngineThread, this };
+	
+	EngineThread();
+	
         // Wait for thread to be exited
-        t.join();
+        // t.join();
         return olc::OK;
     }
 
@@ -1748,15 +1782,14 @@ namespace olc
 
     void PixelGameEngine::EngineThread()
     {
-        if (!olc_WindowCreate())
-            bAtomActive = false;
-
         if (!OnUserCreate())
             bAtomActive = false;
 
         auto timepoint1 = std::chrono::system_clock::now();
         auto timepoint2 = std::chrono::system_clock::now();
-
+	
+	SDL_Event event;
+	
         while (bAtomActive)
         {
             while (bAtomActive)
@@ -1767,7 +1800,6 @@ namespace olc
 
                 float elapsedTime = elapsed.count();
 
-                SDL_Event event;
                 while (SDL_PollEvent(&event))
                 {
                     switch (event.type)
@@ -1849,6 +1881,25 @@ namespace olc
                     case SDL_CONTROLLERBUTTONUP:
                         pControllerButtonNewState[(int)mapControllerButtons[event.cbutton.button]] = false;
                         break;
+                    case SDL_WINDOWEVENT:
+                        switch(event.window.event) {
+                            case SDL_WINDOWEVENT_SIZE_CHANGED:
+                                olc_UpdateWindowSize(event.window.data1, event.window.data2);
+                                break;
+                            case SDL_WINDOWEVENT_FOCUS_GAINED:
+                                bHasInputFocus = true;
+                                break;
+                            case SDL_WINDOWEVENT_FOCUS_LOST:
+                                bHasInputFocus = false;
+                                break;
+                            case SDL_WINDOWEVENT_ENTER:
+                                bHasMouseFocus = true;
+                                break;
+                            case SDL_WINDOWEVENT_LEAVE:
+                                bHasMouseFocus = false;
+                                break;
+                        }
+                        break;
                     }
                 }
 
@@ -1927,12 +1978,9 @@ namespace olc
                 if (!OnUserUpdate(elapsedTime))
                     bAtomActive = false;
 
-                SDL_Surface* surf = SDL_CreateRGBSurfaceFrom(pDefaultDrawTarget->GetData(), nScreenWidth, nScreenHeight, 32, nScreenWidth * sizeof(Uint32), 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
-                SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surf);
+		SDL_UpdateTexture(texture, NULL, pDefaultDrawTarget->GetData(), nScreenWidth * sizeof(uint32_t));
                 SDL_RenderCopy(renderer, texture, NULL, NULL);
                 SDL_RenderPresent(renderer);
-                SDL_DestroyTexture(texture);
-
 
                 fFrameTimer += elapsedTime;
                 ++nFrameCount;
@@ -2068,7 +2116,10 @@ namespace olc
                 }
             }
         }
-        olc_UpdateViewport();
+	
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, nScreenWidth, nScreenHeight);
+
+	olc_UpdateViewport();
 
         mapKeys[SDL_SCANCODE_UNKNOWN] = Key::NONE;
         mapKeys[SDL_SCANCODE_A] = Key::A; mapKeys[SDL_SCANCODE_B] = Key::B; mapKeys[SDL_SCANCODE_C] = Key::C; mapKeys[SDL_SCANCODE_D] = Key::D; mapKeys[SDL_SCANCODE_E] = Key::E;
@@ -2132,12 +2183,14 @@ namespace olc
             }
         }
 
+        SDL_DestroyTexture(texture);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
 
         renderer = NULL;
         window = NULL;
-
+	texture = NULL;
+	
         SDL_Quit();
     }
 
